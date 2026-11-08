@@ -1,6 +1,7 @@
 const r4os = @import("r4os");
 
 const TYPE_IPV4: u16 = 0x0800;
+const TYPE_IPV6: u16 = 0x86DD;
 const TYPE_ARP: u16 = 0x0806;
 const TYPE_R4OS_DIAG: u16 = 0x88B5;
 const MIN_FRAME_SIZE: usize = 60;
@@ -59,6 +60,8 @@ fn handleRx(request: *r4os.abi.EthernetFrameOp) void {
         request.flags |= r4os.abi.ethernet_flag_broadcast;
     } else if (isOwn(frame[0..6], request.own_mac)) {
         request.flags |= r4os.abi.ethernet_flag_own_unicast;
+    } else if (isIpv6Multicast(frame)) {
+        request.flags |= r4os.abi.ethernet_flag_multicast;
     } else {
         request.result = r4os.abi.ethernet_result_filtered;
         return;
@@ -77,6 +80,7 @@ fn handleTx(request: *r4os.abi.EthernetFrameOp) void {
     const frame = request.frame[0..@intCast(request.frame_len)];
     request.ethertype = readType(frame);
     if (isBroadcast(frame[0..6])) request.flags |= r4os.abi.ethernet_flag_broadcast;
+    if (isIpv6Multicast(frame)) request.flags |= r4os.abi.ethernet_flag_multicast;
     classify(request);
     request.result = r4os.abi.ethernet_result_ok;
 }
@@ -120,6 +124,7 @@ fn buildDiagFrame(request: *r4os.abi.EthernetFrameOp) void {
 fn classify(request: *r4os.abi.EthernetFrameOp) void {
     switch (request.ethertype) {
         TYPE_IPV4 => request.flags |= r4os.abi.ethernet_flag_ipv4,
+        TYPE_IPV6 => request.flags |= r4os.abi.ethernet_flag_ipv6,
         TYPE_ARP => request.flags |= r4os.abi.ethernet_flag_arp,
         TYPE_R4OS_DIAG => request.flags |= r4os.abi.ethernet_flag_r4os_diag,
         else => request.flags |= r4os.abi.ethernet_flag_unknown_type,
@@ -134,6 +139,13 @@ fn requestFromBuffer(buffer: *const r4os.abi.ProtocolBuffer) ?*r4os.abi.Ethernet
 
 fn readType(frame: []const u8) u16 {
     return (@as(u16, frame[12]) << 8) | @as(u16, frame[13]);
+}
+
+fn isIpv6Multicast(frame: []const u8) bool {
+    if (frame.len < HEADER_SIZE + 40 or readType(frame) != TYPE_IPV6 or frame[HEADER_SIZE] >> 4 != 6 or frame[0] != 0x33 or frame[1] != 0x33 or frame[HEADER_SIZE + 24] != 0xff) return false;
+    var i: usize = 0;
+    while (i < 4) : (i += 1) if (frame[2 + i] != frame[HEADER_SIZE + 36 + i]) return false;
+    return true;
 }
 
 fn isBroadcast(mac: []const u8) bool {
