@@ -8,15 +8,18 @@ const MIN_FRAME_SIZE: usize = 60;
 const HEADER_SIZE: usize = 14;
 
 comptime {
-    asm (r4os.r4dev.protocolEntriesAsm("neteth_init", "neteth_shutdown", "neteth_query", "neteth_dispatch"));
+    if (!@import("builtin").is_test) asm (r4os.technical2.protocolEntriesAsm("neteth_init", "neteth_shutdown", "neteth_query", "neteth_dispatch"));
 }
 
-export fn neteth_init(api: *const r4os.r4dev.ProtocolApi) callconv(.c) i32 {
-    var ctx = r4os.r4dev.ProtocolContext.init(api);
-    ctx.logInfo("NETETH.R4P init");
-    _ = ctx.registerRole("net.ethernet", .net, 0);
-    _ = ctx.setStatus(.active, "Ethernet-II R4P active");
-    return 0;
+export fn neteth_init(api: *const r4os.technical2.abi.ProtocolApi2) callconv(.c) i32 {
+    const view = r4os.technical2.Protocol.init(api) orelse return r4os.abi.network_error_backend;
+    const log = view.function("log_info") orelse return r4os.abi.err_no_fn;
+    const register = view.function("register_role") orelse return r4os.abi.err_no_fn;
+    const status = view.function("set_status") orelse return r4os.abi.err_no_fn;
+    log("NETETH.R4P init");
+    const registered = register("net.ethernet", @intFromEnum(r4os.abi.ProtocolCategory.net), 0);
+    if (registered != 0) return registered;
+    return status(@intFromEnum(r4os.abi.ProtocolState.active), "Ethernet-II R4P active");
 }
 
 export fn neteth_shutdown() callconv(.c) i32 {
@@ -132,13 +135,18 @@ fn classify(request: *r4os.abi.EthernetFrameOp) void {
 }
 
 fn requestFromBuffer(buffer: *const r4os.abi.ProtocolBuffer) ?*r4os.abi.EthernetFrameOp {
-    if (buffer.data == null) return null;
-    if (buffer.len < @sizeOf(r4os.abi.EthernetFrameOp)) return null;
-    return @ptrCast(@alignCast(buffer.data.?));
+    // The legacy operation is an exclusive in/out native record, despite
+    // the const transport metadata. No packet bytes are native-cast here.
+    const native = r4os.native_protocol_view;
+    var metadata = buffer.*;
+    const view = native.InOut(r4os.abi.EthernetFrameOp).init(&metadata, native.Policy.record(r4os.abi.EthernetFrameOp, .inout, .prefix)) catch return null;
+    return view.value;
 }
 
 fn readType(frame: []const u8) u16 {
-    return (@as(u16, frame[12]) << 8) | @as(u16, frame[13]);
+    var reader = r4os.binary_cursor.Reader.init(frame) catch unreachable;
+    _ = reader.take(12) catch unreachable;
+    return reader.readInt(u16, .big) catch unreachable;
 }
 
 fn isIpv6Multicast(frame: []const u8) bool {
